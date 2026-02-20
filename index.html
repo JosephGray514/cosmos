@@ -19,6 +19,47 @@ html,body{width:100%;height:100%;overflow:hidden;background:#00000a;font-family:
 
 /* CANVAS */
 #starfield{position:fixed;inset:0;z-index:0}
+#combatLayer{position:fixed;inset:0;z-index:70;pointer-events:none}
+
+/* COMBAT HUD */
+.combat-hud{
+  position:fixed;top:24px;left:50%;transform:translateX(-50%);
+  z-index:90;display:flex;gap:10px;pointer-events:none;
+  transition:opacity .25s
+}
+.combat-pill{
+  font-family:'Orbitron',monospace;font-size:.56rem;letter-spacing:2px;
+  color:rgba(232,240,255,.72);text-transform:uppercase;
+  border:1px solid rgba(0,229,255,.25);
+  background:rgba(0,18,34,.55);
+  padding:7px 11px;border-radius:999px;
+  backdrop-filter:blur(8px)
+}
+.combat-pill b{color:var(--cyan);font-weight:700;margin-left:6px;text-shadow:0 0 10px #00e5ff66}
+.combat-pill.danger b{color:var(--red);text-shadow:0 0 10px #ff445566}
+#combatMsg{
+  position:fixed;top:66px;left:50%;transform:translateX(-50%);
+  z-index:90;pointer-events:auto;cursor:pointer;
+  font-family:'Orbitron',monospace;font-size:.54rem;letter-spacing:2px;
+  color:rgba(255,255,255,.62);text-transform:uppercase;white-space:nowrap;
+  border:1px solid rgba(255,255,255,.12);border-radius:999px;
+  background:rgba(2,10,20,.58);padding:6px 14px;
+  transition:opacity .25s, border-color .25s, color .25s
+}
+#combatMsg.alert{color:rgba(255,80,96,.9);border-color:rgba(255,80,96,.45)}
+.combat-hud.hide,#combatMsg.hide{opacity:0}
+
+.combat-mode [data-name]{pointer-events:none!important}
+.combat-mode #tooltip{opacity:0!important}
+.combat-mode #content{opacity:.2;transition:opacity .28s}
+.combat-mode .bottom-bar{opacity:.42;transition:opacity .28s}
+.combat-mode .hint{opacity:0}
+
+@media (max-width:760px){
+  .combat-hud{top:14px;gap:6px}
+  .combat-pill{font-size:.49rem;letter-spacing:1.2px;padding:5px 8px}
+  #combatMsg{top:46px;font-size:.45rem;letter-spacing:1.2px;padding:5px 10px}
+}
 
 /* NEBULA */
 .nebula{
@@ -363,6 +404,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#00000a;font-family:
 <body>
 
 <canvas id="starfield"></canvas>
+<canvas id="combatLayer"></canvas>
 <div class="nebula"></div>
 <div class="scanlines"></div>
 
@@ -518,6 +560,14 @@ html,body{width:100%;height:100%;overflow:hidden;background:#00000a;font-family:
   <span class="date-str">19<span class="dot-sep">·</span>FEB<span class="dot-sep">·</span>2026</span>
 </div>
 
+<div id="combatHud" class="combat-hud">
+  <div class="combat-pill">Puntos <b id="scoreVal">0</b></div>
+  <div class="combat-pill danger">Vidas <b id="livesVal">3</b></div>
+  <div class="combat-pill">Ola <b id="waveVal">1</b></div>
+  <div class="combat-pill">Estado <b id="stateVal">Activa</b></div>
+</div>
+<div id="combatMsg">Misión activa · WASD/Flechas mueve · Space dispara · C explora · R reinicia</div>
+
 <div class="hint">◈ Explora los planetas con el cursor</div>
 
 <script>
@@ -573,6 +623,7 @@ const tipI=document.getElementById('tipInfo');
 document.querySelectorAll('[data-name]').forEach(el=>{
   el.style.pointerEvents='all';
   el.addEventListener('mouseenter',e=>{
+    if(combat.enabled) return;
     const t=e.currentTarget;
     tipN.textContent=t.dataset.name;
     tipI.textContent=t.dataset.info;
@@ -580,6 +631,7 @@ document.querySelectorAll('[data-name]').forEach(el=>{
     spawnBurst(e.clientX,e.clientY,'#00e5ff');
   });
   el.addEventListener('mousemove',e=>{
+    if(combat.enabled) return;
     tip.style.left=(e.clientX+18)+'px';
     tip.style.top=(e.clientY-12)+'px';
   });
@@ -600,6 +652,7 @@ function spawnBurst(x,y,col='#00e5ff'){
   }
 }
 document.addEventListener('click',e=>{
+  if(combat.enabled) return;
   if(!e.target.closest('[data-name]')) spawnBurst(e.clientX,e.clientY);
 });
 
@@ -610,6 +663,396 @@ document.addEventListener('mousemove',e=>{
   const dy=(e.clientY/innerHeight-.5)*12;
   solar.style.transform=`translate(${dx}px,${dy}px)`;
 });
+
+// ── COMBAT: SHIP VS CRATERS ──
+const combatCv=document.getElementById('combatLayer');
+const cc=combatCv.getContext('2d');
+const combatHud=document.getElementById('combatHud');
+const combatMsg=document.getElementById('combatMsg');
+const scoreVal=document.getElementById('scoreVal');
+const livesVal=document.getElementById('livesVal');
+const waveVal=document.getElementById('waveVal');
+const stateVal=document.getElementById('stateVal');
+
+const combat={
+  enabled:true,
+  running:true,
+  gameOver:false,
+  score:0,
+  lives:3,
+  wave:1,
+  spawnTimer:.7,
+  shotTimer:0,
+  invuln:0,
+  msgHold:0,
+  keys:{},
+  bullets:[],
+  craters:[],
+  particles:[],
+  ship:{x:innerWidth*.5,y:innerHeight*.82,r:14,speed:360}
+};
+
+function resizeCombat(){
+  combatCv.width=innerWidth;
+  combatCv.height=innerHeight;
+  const lim=combat.ship.r+10;
+  combat.ship.x=Math.min(Math.max(combat.ship.x,lim),combatCv.width-lim);
+  combat.ship.y=Math.min(Math.max(combat.ship.y,lim),combatCv.height-lim);
+}
+resizeCombat();
+window.addEventListener('resize',resizeCombat);
+
+function defaultMessage(){
+  if(!combat.enabled) return 'Modo exploración activo · C para volver al combate';
+  if(combat.gameOver) return 'Nave destruida · R para reiniciar · C explora';
+  return 'Misión activa · WASD/Flechas mueve · Space dispara · C explora · R reinicia';
+}
+
+function setMessage(txt,alert=false,hold=0){
+  combatMsg.textContent=txt;
+  combatMsg.classList.toggle('alert',alert);
+  combat.msgHold=hold;
+}
+
+function refreshHud(){
+  scoreVal.textContent=combat.score;
+  livesVal.textContent=combat.lives;
+  waveVal.textContent=combat.wave;
+  stateVal.textContent=!combat.enabled?'Explora':(combat.gameOver?'Destruida':(combat.running?'Activa':'Pausa'));
+}
+
+function setCombatEnabled(next){
+  combat.enabled=next;
+  combat.running=next&&!combat.gameOver;
+  document.body.classList.toggle('combat-mode',next);
+  combatHud.classList.toggle('hide',!next);
+  setMessage(defaultMessage(),combat.gameOver&&next);
+  refreshHud();
+}
+
+function resetCombat(){
+  combat.score=0;
+  combat.lives=3;
+  combat.wave=1;
+  combat.gameOver=false;
+  combat.running=true;
+  combat.spawnTimer=.7;
+  combat.shotTimer=0;
+  combat.invuln=0;
+  combat.msgHold=0;
+  combat.bullets.length=0;
+  combat.craters.length=0;
+  combat.particles.length=0;
+  combat.ship.x=combatCv.width*.5;
+  combat.ship.y=combatCv.height*.82;
+  setMessage(defaultMessage());
+  refreshHud();
+}
+
+function pushParticles(x,y,count,col,minSp=70,maxSp=280){
+  for(let i=0;i<count;i++){
+    const ang=Math.random()*Math.PI*2;
+    const sp=minSp+Math.random()*(maxSp-minSp);
+    const life=.35+Math.random()*.55;
+    combat.particles.push({
+      x,y,vx:Math.cos(ang)*sp,vy:Math.sin(ang)*sp,
+      life,max:life,size:1+Math.random()*2.6,col
+    });
+  }
+}
+
+function spawnCrater(){
+  const side=Math.random();
+  let x,y;
+  if(side<.68){x=Math.random()*combatCv.width;y=-52;}
+  else if(side<.84){x=-52;y=Math.random()*combatCv.height*.55;}
+  else{x=combatCv.width+52;y=Math.random()*combatCv.height*.55;}
+
+  const r=12+Math.random()*24;
+  const speed=64+combat.wave*16+Math.random()*44;
+  const tx=combat.ship.x+(Math.random()-.5)*240;
+  const ty=combat.ship.y+40;
+  const ang=Math.atan2(ty-y,tx-x);
+  const hp=Math.max(1,Math.ceil((r-8)/12)+Math.floor((combat.wave-1)/4));
+  const shape=[];
+  const n=8+Math.floor(Math.random()*3);
+  for(let i=0;i<n;i++) shape.push(.78+Math.random()*.34);
+
+  combat.craters.push({
+    x,y,vx:Math.cos(ang)*speed,vy:Math.sin(ang)*speed,
+    r,hp,maxHp:hp,rot:Math.random()*Math.PI*2,
+    rotSp:(Math.random()-.5)*2.4,shape
+  });
+}
+
+function shoot(){
+  combat.bullets.push({
+    x:combat.ship.x,y:combat.ship.y-combat.ship.r-8,
+    vx:0,vy:-760,r:3,life:1.2
+  });
+  combat.shotTimer=.14;
+  pushParticles(combat.ship.x,combat.ship.y+combat.ship.r*.65,4,'#00e5ff',40,120);
+}
+
+function isHit(a,b){
+  const dx=a.x-b.x,dy=a.y-b.y,rr=a.r+b.r;
+  return dx*dx+dy*dy<=rr*rr;
+}
+
+function destroyCrater(i){
+  const c=combat.craters[i];
+  combat.score+=Math.round(12+c.r*1.6+c.maxHp*4);
+  pushParticles(c.x,c.y,18,'#ffd060',80,330);
+  pushParticles(c.x,c.y,8,'#ff8844',60,220);
+  combat.craters.splice(i,1);
+
+  const targetWave=1+Math.floor(combat.score/230);
+  if(targetWave>combat.wave){
+    combat.wave=targetWave;
+    setMessage(`Ola ${combat.wave} detectada · Mayor actividad de cráteres`,false,2.2);
+  }
+  refreshHud();
+}
+
+function updateCombat(dt){
+  for(let i=combat.particles.length-1;i>=0;i--){
+    const p=combat.particles[i];
+    p.life-=dt;
+    if(p.life<=0){combat.particles.splice(i,1);continue;}
+    p.x+=p.vx*dt;p.y+=p.vy*dt;
+    p.vx*=.985;p.vy*=.985;
+  }
+
+  if(combat.msgHold>0){
+    combat.msgHold-=dt;
+    if(combat.msgHold<=0) setMessage(defaultMessage(),combat.gameOver&&combat.enabled);
+  }
+
+  if(!combat.enabled||!combat.running) return;
+
+  combat.shotTimer=Math.max(0,combat.shotTimer-dt);
+  combat.spawnTimer-=dt;
+  combat.invuln=Math.max(0,combat.invuln-dt);
+
+  let mvx=((combat.keys.ArrowRight||combat.keys.KeyD)?1:0)-((combat.keys.ArrowLeft||combat.keys.KeyA)?1:0);
+  let mvy=((combat.keys.ArrowDown||combat.keys.KeyS)?1:0)-((combat.keys.ArrowUp||combat.keys.KeyW)?1:0);
+  const mag=Math.hypot(mvx,mvy)||1;
+  mvx/=mag;mvy/=mag;
+
+  combat.ship.x+=mvx*combat.ship.speed*dt;
+  combat.ship.y+=mvy*combat.ship.speed*dt;
+  const lim=combat.ship.r+8;
+  combat.ship.x=Math.min(Math.max(combat.ship.x,lim),combatCv.width-lim);
+  combat.ship.y=Math.min(Math.max(combat.ship.y,lim),combatCv.height-lim);
+
+  if((combat.keys.Space||combat.keys.KeyJ)&&combat.shotTimer<=0) shoot();
+
+  if(combat.spawnTimer<=0){
+    spawnCrater();
+    const interval=Math.max(.34,1.08-(combat.wave-1)*.085);
+    combat.spawnTimer=interval*(.75+Math.random()*.65);
+  }
+
+  for(let i=combat.bullets.length-1;i>=0;i--){
+    const b=combat.bullets[i];
+    b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
+    if(b.life<=0||b.y<-40||b.x<-40||b.x>combatCv.width+40) combat.bullets.splice(i,1);
+  }
+
+  for(let i=combat.craters.length-1;i>=0;i--){
+    const c=combat.craters[i];
+    c.x+=c.vx*dt;c.y+=c.vy*dt;c.rot+=c.rotSp*dt;
+    if(c.y>combatCv.height+65||c.x<-90||c.x>combatCv.width+90){
+      combat.craters.splice(i,1);
+      continue;
+    }
+
+    let removed=false;
+    for(let j=combat.bullets.length-1;j>=0;j--){
+      const b=combat.bullets[j];
+      if(!isHit(c,b)) continue;
+      combat.bullets.splice(j,1);
+      c.hp--;
+      pushParticles(b.x,b.y,5,'#00e5ff',30,150);
+      if(c.hp<=0){
+        destroyCrater(i);
+        removed=true;
+      }else{
+        pushParticles(c.x,c.y,6,'#ffb26b',40,190);
+      }
+      break;
+    }
+    if(removed) continue;
+
+    if(combat.invuln<=0&&isHit(c,combat.ship)){
+      combat.craters.splice(i,1);
+      combat.lives--;
+      combat.invuln=1;
+      pushParticles(combat.ship.x,combat.ship.y,24,'#ff4455',90,320);
+
+      if(combat.lives<=0){
+        combat.lives=0;
+        combat.running=false;
+        combat.gameOver=true;
+        setMessage(defaultMessage(),true);
+      }else{
+        setMessage('Impacto directo · Maniobra evasiva',true,1.1);
+      }
+      refreshHud();
+    }
+  }
+}
+
+function drawShip(now){
+  if(combat.invuln>0&&Math.floor(now/90)%2===0) return;
+  const s=combat.ship;
+  cc.save();
+  cc.translate(s.x,s.y);
+  cc.shadowColor='#00e5ff';
+  cc.shadowBlur=14;
+  cc.fillStyle='rgba(6,34,58,.88)';
+  cc.strokeStyle='rgba(0,229,255,.95)';
+  cc.lineWidth=1.8;
+  cc.beginPath();
+  cc.moveTo(0,-s.r*1.48);
+  cc.lineTo(s.r*.92,s.r*.95);
+  cc.lineTo(0,s.r*.36);
+  cc.lineTo(-s.r*.92,s.r*.95);
+  cc.closePath();
+  cc.fill();
+  cc.stroke();
+
+  cc.shadowBlur=0;
+  cc.fillStyle='rgba(170,232,255,.95)';
+  cc.beginPath();
+  cc.arc(0,-s.r*.38,s.r*.24,0,Math.PI*2);
+  cc.fill();
+
+  cc.strokeStyle='rgba(255,208,96,.9)';
+  cc.lineWidth=1;
+  cc.beginPath();
+  cc.moveTo(-s.r*.24,s.r*.82);
+  cc.lineTo(0,s.r*1.26);
+  cc.lineTo(s.r*.24,s.r*.82);
+  cc.stroke();
+  cc.restore();
+}
+
+function drawCrater(c){
+  cc.save();
+  cc.translate(c.x,c.y);
+  cc.rotate(c.rot);
+
+  cc.fillStyle='rgba(124,92,70,.95)';
+  cc.strokeStyle='rgba(255,208,96,.18)';
+  cc.lineWidth=1;
+  cc.beginPath();
+  for(let i=0;i<c.shape.length;i++){
+    const a=i/c.shape.length*Math.PI*2;
+    const rad=c.r*c.shape[i];
+    const px=Math.cos(a)*rad;
+    const py=Math.sin(a)*rad;
+    if(i===0) cc.moveTo(px,py);
+    else cc.lineTo(px,py);
+  }
+  cc.closePath();
+  cc.fill();
+  cc.stroke();
+
+  cc.fillStyle='rgba(55,33,22,.36)';
+  cc.beginPath();
+  cc.arc(-c.r*.24,-c.r*.12,c.r*.22,0,Math.PI*2);
+  cc.arc(c.r*.18,c.r*.16,c.r*.18,0,Math.PI*2);
+  cc.fill();
+
+  if(c.maxHp>1){
+    cc.strokeStyle='rgba(255,88,88,.45)';
+    cc.lineWidth=2;
+    cc.beginPath();
+    cc.arc(0,0,c.r+3,-Math.PI/2,-Math.PI/2+Math.PI*2*(c.hp/c.maxHp));
+    cc.stroke();
+  }
+  cc.restore();
+}
+
+function renderCombat(now){
+  cc.clearRect(0,0,combatCv.width,combatCv.height);
+  if(!combat.enabled) return;
+
+  for(let i=0;i<combat.particles.length;i++){
+    const p=combat.particles[i];
+    cc.globalAlpha=Math.max(0,p.life/p.max);
+    cc.fillStyle=p.col;
+    cc.beginPath();
+    cc.arc(p.x,p.y,p.size,0,Math.PI*2);
+    cc.fill();
+  }
+  cc.globalAlpha=1;
+
+  cc.strokeStyle='rgba(0,229,255,.95)';
+  cc.lineWidth=2.1;
+  cc.lineCap='round';
+  cc.shadowColor='#00e5ff';
+  cc.shadowBlur=9;
+  for(let i=0;i<combat.bullets.length;i++){
+    const b=combat.bullets[i];
+    cc.beginPath();
+    cc.moveTo(b.x,b.y+b.r*2.1);
+    cc.lineTo(b.x,b.y-9);
+    cc.stroke();
+  }
+  cc.shadowBlur=0;
+
+  for(let i=0;i<combat.craters.length;i++) drawCrater(combat.craters[i]);
+  drawShip(now);
+
+  if(combat.gameOver){
+    cc.fillStyle='rgba(255,68,85,.82)';
+    cc.font='700 22px Orbitron, monospace';
+    cc.textAlign='center';
+    cc.fillText('NAVE DESTRUIDA',combatCv.width/2,combatCv.height*.5);
+    cc.fillStyle='rgba(255,208,96,.9)';
+    cc.font='600 14px Orbitron, monospace';
+    cc.fillText('Pulsa R o haz clic en el mensaje para reiniciar',combatCv.width/2,combatCv.height*.5+22);
+  }
+}
+
+window.addEventListener('keydown',e=>{
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+  combat.keys[e.code]=true;
+
+  if(e.code==='KeyR'){
+    e.preventDefault();
+    resetCombat();
+    setCombatEnabled(true);
+  }
+
+  if(e.code==='KeyC'){
+    e.preventDefault();
+    combat.keys[e.code]=false;
+    setCombatEnabled(!combat.enabled);
+  }
+});
+
+window.addEventListener('keyup',e=>{combat.keys[e.code]=false;});
+window.addEventListener('blur',()=>{combat.keys={};});
+combatMsg.addEventListener('click',()=>{
+  if(combat.gameOver){
+    resetCombat();
+    setCombatEnabled(true);
+  }
+});
+
+resetCombat();
+setCombatEnabled(true);
+let combatLast=performance.now();
+(function combatLoop(now){
+  const dt=Math.min(.04,(now-combatLast)/1000);
+  combatLast=now;
+  updateCombat(dt);
+  renderCombat(now);
+  requestAnimationFrame(combatLoop);
+})(combatLast);
 </script>
 </body>
 </html>
